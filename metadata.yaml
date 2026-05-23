@@ -1,0 +1,35 @@
+prompt: |
+  Phân tích đoạn văn bản dưới đây trích từ sách giáo khoa thú y tiếng Việt
+  "Bệnh của Chó, Mèo" (TS. Vũ Như Quán, ĐH Nông nghiệp Hà Nội, 2008).
+  Trích xuất các trường metadata phù hợp nhất.
+
+  Lưu ý:
+  - Tài liệu này LUÔN bằng tiếng Việt → language = "vietnamese"
+  - Nếu đoạn đề cập cả chó lẫn mèo → animal_type = "both"
+  - Nếu chỉ đề cập chó → animal_type = "dog"
+  - Nếu chỉ đề cập mèo → animal_type = "cat"
+  - Chọn topic phản ánh nội dung CHÍNH của đoạn, không phải nội dung phụ
+
+fields:
+  - name: animal_type
+    description: "Loại động vật được đề cập trong đoạn văn"
+    type: string
+    values: [dog, cat, both]
+
+  - name: topic
+    description: "Chủ đề chính của đoạn văn"
+    type: string
+    values:
+      - anatomy        # giải phẫu, sinh lý, cấu tạo cơ thể
+      - disease        # tên bệnh, nguyên nhân gây bệnh, mầm bệnh
+      - symptom        # triệu chứng lâm sàng, biểu hiện bệnh
+      - diagnosis      # chẩn đoán, xét nghiệm, phân biệt bệnh
+      - treatment      # điều trị, thuốc, liều lượng, phác đồ
+      - prevention     # phòng bệnh, vaccine, vệ sinh, kiểm soát
+      - nutrition      # dinh dưỡng, chế độ ăn, thức ăn
+      - care           # chăm sóc, nuôi dưỡng, vệ sinh thú cưng
+
+  - name: language
+    description: "Ngôn ngữ của đoạn văn (tài liệu này hoàn toàn tiếng Việt)"
+    type: string
+    values: [vietnamese]
