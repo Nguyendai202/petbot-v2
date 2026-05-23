@@ -161,12 +161,22 @@ class VetRetriever:
             with_payload=True,
         ).points
 
-        # Pass 2: unfiltered — bắt cross-referenced treatment (VD: Parvo → Carre)
+        # Pass 2: generic treatment query — KHÔNG chứa tên bệnh cụ thể
+        # để embedding không bị kéo về bệnh đó, bắt được cross-reference
+        # VD: "Parvo điều trị → Carre" → query generic sẽ match Carre treatment chunks
+        generic_query = "điều trị thuốc chống nôn bù nước huyết thanh phác đồ liều lượng"
+        resp2 = self._openai.embeddings.create(
+            model=_EMBEDDING_MODEL,
+            input=generic_query,
+        )
+        dense2 = resp2.data[0].embedding
+        sparse2 = _build_sparse_vector(generic_query)
+
         unfiltered = self._client.query_points(
             collection_name=_COLLECTION,
             prefetch=[
-                Prefetch(query=dense_vector, using="dense", limit=self._top_k * 2),
-                Prefetch(query=sparse_vector, using="sparse", limit=self._top_k * 2),
+                Prefetch(query=dense2, using="dense", limit=self._top_k * 2),
+                Prefetch(query=sparse2, using="sparse", limit=self._top_k * 2),
             ],
             query=FusionQuery(fusion=Fusion.RRF),
             limit=self._top_k,

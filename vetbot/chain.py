@@ -330,7 +330,8 @@ async def stream_answer(
     retriever: VetRetriever,
     messages: list[dict],
     client: AsyncOpenAI,
-    model: str = "gpt-4o-mini",
+    routing_model: str = "gpt-4o-mini",
+    diagnosis_model: str = "gpt-4o",
 ) -> AsyncGenerator[str, None]:
     """
     Flow:
@@ -350,7 +351,7 @@ async def stream_answer(
         context = _retrieve(retriever, query)
         system = _SYSTEM + (f"\n\nTài liệu tham khảo:\n{context}" if context else "")
         resp = await traced_client.chat.completions.create(
-            model=model,
+            model=diagnosis_model,
             messages=[{"role": "system", "content": system}] + _trim(messages),
             stream=True,
             langsmith_extra={"name": "vet-emergency"},
@@ -363,7 +364,7 @@ async def stream_answer(
     # ── 2. CLASSIFY → hỏi thêm nếu chưa đủ ─────────────────
     followup_count = _count_followup_turns(messages)
     if followup_count < _MAX_FOLLOWUP:
-        classify_result = await _classify(messages, traced_client, model)
+        classify_result = await _classify(messages, traced_client, routing_model)
         state = classify_result.get("state", "ready")
         if state in ("vague", "has_symptoms"):
             if q := classify_result.get("followup_question", ""):
@@ -371,7 +372,7 @@ async def stream_answer(
                 return
 
     # ── 3. QUERY UNDERSTANDING ───────────────────────────────
-    qu_result = await _query_understanding(messages, traced_client, model)
+    qu_result = await _query_understanding(messages, traced_client, routing_model)
 
     # Không cần retrieve → chitchat
     if not qu_result.get("needs_retrieval", True):
@@ -429,7 +430,7 @@ async def stream_answer(
     # ── 6. DIAGNOSE ──────────────────────────────────────────
     system = _SYSTEM + f"\n\nTài liệu tham khảo:\n{context}"
     resp = await traced_client.chat.completions.create(
-        model=model,
+        model=diagnosis_model,
         messages=[{"role": "system", "content": system}] + _trim(messages),
         stream=True,
         langsmith_extra={"name": "vet-diagnose"},
