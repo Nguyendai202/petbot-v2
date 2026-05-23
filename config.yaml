@@ -1,0 +1,10 @@
+# Tham khảo — các giá trị này được hardcode trong vetbot/ingest.py và retriever.py
+# Chỉnh sửa trực tiếp trong code nếu cần thay đổi
+
+collection:   vet-disease
+embedding:    text-embedding-3-small
+llm:          gpt-4o-mini
+chunk_size:   800
+chunk_overlap: 100
+top_k:        6
+batch_size:   20   # số chunks upload mỗi HTTP request
