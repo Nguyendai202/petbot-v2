@@ -247,11 +247,53 @@ QUY TẮC QUAN TRỌNG
 - Query chỉ chứa thông tin THẬT từ conversation
 - KHÔNG đoán hay thêm tên bệnh vào query symptom
 - Query phải ngắn gọn, súc tích — tối đa 15 từ
-- Bỏ từ xã giao, giữ triệu chứng và thông tin y tế\
+- Bỏ từ xã giao, giữ triệu chứng và thông tin y tế
+
+TRIỆU CHỨNG PHẢI GIỮ LẠI (không được bỏ sót):
+✦ Vận động/thần kinh: chệnh choạng, run, liệt, co giật, mất thăng bằng
+✦ Mắt: đục, màng trắng, vàng, đỏ, chảy ghèn
+✦ Tiêu hóa: màu phân, màu chất nôn, tần suất, mùi
+✦ Trạng thái: co người, rên rỉ, lờ đờ, bỏ ăn
+✦ Thông tin nền: loài, tuổi, đã tiêm phòng chưa\
+"""
+
+_DISAMBIGUATE_SYSTEM = """\
+Bạn là AI chẩn đoán thú y. Phân tích triệu chứng và tài liệu để quyết định có đủ thông tin chốt bệnh chưa.
+
+OUTPUT (JSON only):
+{
+  "confident": true/false,
+  "disease": "tên bệnh đầy đủ từ tài liệu (empty nếu không confident)",
+  "question": "câu hỏi phân biệt (empty nếu confident)"
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+confident = true KHI
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- 1 bệnh trong tài liệu khớp rõ ràng với tất cả triệu chứng
+- Có triệu chứng đặc trưng loại trừ được các bệnh khác
+→ disease: tên bệnh đúng trong tài liệu
+→ question: ""
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+confident = false KHI
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Nhiều bệnh trong tài liệu có triệu chứng tương tự
+- Chưa đủ thông tin loại trừ
+
+→ question: 1 câu hỏi ngắn (kiểu Zalo) về triệu chứng đặc trưng
+  phân biệt đúng các bệnh đang cân nhắc
+  KHÔNG hỏi lại thông tin đã có trong conversation
+  KHÔNG hỏi nhiều câu một lúc
+
+VD question tốt:
+- "Mắt bé có bị đục hoặc có màng trắng không?" (phân biệt Viêm Gan vs Carre)
+- "Phân bé màu gì, có mùi tanh khắm không?" (phân biệt Parvo vs Cầu Trùng)\
 """
 
 _MAX_HISTORY_TURNS = 10
 _MAX_FOLLOWUP = 4
+_MAX_DISAMBIGUATE = 2
 
 
 def _trim(messages: list[dict]) -> list[dict]:
@@ -325,6 +367,42 @@ async def _query_understanding(messages, client, model) -> dict:
         return {"needs_retrieval": True, "chitchat_response": ""}
 
 
+def _count_disambiguate_turns(messages: list[dict]) -> int:
+    """Đếm số lần đã hỏi câu phân biệt bệnh (dựa trên marker trong content)."""
+    return sum(
+        1 for msg in messages
+        if msg["role"] == "assistant" and "?" in msg["content"]
+        and any(kw in msg["content"].lower() for kw in ["mắt", "phân", "nôn", "màu", "mùi", "lần"])
+    )
+
+
+async def _disambiguate(
+    messages: list[dict],
+    coarse_context: str,
+    client,
+    model: str,
+) -> dict:
+    """Sau coarse retrieve: quyết định có đủ thông tin chốt bệnh chưa.
+    - confident=True  → {"confident": True, "disease": "Bệnh X", "question": ""}
+    - confident=False → {"confident": False, "disease": "", "question": "câu hỏi"}
+    """
+    symptoms = _format_history(messages)
+    prompt = f"TRIỆU CHỨNG:\n{symptoms}\n\nTÀI LIỆU THAM KHẢO:\n{coarse_context}"
+    try:
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": _DISAMBIGUATE_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            stream=False,
+            response_format={"type": "json_object"},
+            langsmith_extra={"name": "vet-disambiguate"},
+        )
+        return json.loads(resp.choices[0].message.content)
+    except Exception:
+        return {"confident": True, "disease": "", "question": ""}
+
 
 async def stream_answer(
     retriever: VetRetriever,
@@ -336,10 +414,12 @@ async def stream_answer(
     """
     Flow:
     1. Emergency check → sơ cứu ngay
-    2. Classify → hỏi thêm nếu chưa đủ thông tin
-    3. Query Understanding → xác định queries tối ưu
-    4. Retrieve với từng query → merge context
-    5. Context relevance check → chẩn đoán hoặc hỏi thêm
+    2. Classify → hỏi thêm thông tin cơ bản nếu chưa đủ
+    3. Query Understanding → chitchat hay cần retrieve?
+    4. Coarse retrieve → lấy candidate chunks
+    5. Disambiguate → đủ thông tin chốt bệnh? hay hỏi thêm câu targeted?
+    6. Fine retrieve → treatment chunks của bệnh đã chốt
+    7. Diagnose → trả lời với đầy đủ context
     """
     query = next(
         (m["content"] for m in reversed(messages) if m["role"] == "user"), ""
@@ -361,7 +441,7 @@ async def stream_answer(
                 yield token
         return
 
-    # ── 2. CLASSIFY → hỏi thêm nếu chưa đủ ─────────────────
+    # ── 2. CLASSIFY → hỏi thông tin cơ bản nếu thiếu ────────
     followup_count = _count_followup_turns(messages)
     if followup_count < _MAX_FOLLOWUP:
         classify_result = await _classify(messages, traced_client, routing_model)
@@ -374,39 +454,46 @@ async def stream_answer(
     # ── 3. QUERY UNDERSTANDING ───────────────────────────────
     qu_result = await _query_understanding(messages, traced_client, routing_model)
 
-    # Không cần retrieve → chitchat
     if not qu_result.get("needs_retrieval", True):
-        chitchat = qu_result.get("chitchat_response", "")
-        if chitchat:
+        if chitchat := qu_result.get("chitchat_response", ""):
             yield chitchat
             return
 
-    # ── 4. COARSE-TO-FINE RETRIEVE ───────────────────────────
-    symptom_query = " ".join(
+    # ── 4. COARSE RETRIEVE ───────────────────────────────────
+    queries = qu_result.get("queries", [])
+    symptom_queries = [q["query"] for q in queries if q.get("purpose") == "symptom"]
+    symptom_query = symptom_queries[0] if symptom_queries else " ".join(
         msg["content"] for msg in messages
         if msg["role"] == "user" and len(msg["content"]) > 15
-    )[-600:]
+    )[-400:]
 
-    # Vòng 1 — Coarse: tìm bệnh từ triệu chứng
     print(f"[RETRIEVE:coarse] {symptom_query[:80]}")
     coarse_points = _retrieve_points(retriever, symptom_query)
 
     if not coarse_points:
-        yield (
-            "Mình chưa tìm được thông tin phù hợp. "
-            "Bạn có thể mô tả thêm triệu chứng cụ thể không?"
-        )
+        yield "Mình chưa tìm được thông tin phù hợp. Bạn có thể mô tả thêm triệu chứng cụ thể không?"
         return
 
-    # Xác định bệnh có score cao nhất từ vòng 1
-    top_disease = coarse_points[0].payload.get("disease_name", "")
+    # ── 5. DISAMBIGUATE → chốt bệnh hoặc hỏi thêm ──────────
+    coarse_context = retriever.format_points(coarse_points)
+    disambig_count = _count_disambiguate_turns(messages)
+    disambig = await _disambiguate(messages, coarse_context, traced_client, routing_model)
+
+    print(f"[DISAMBIGUATE] confident={disambig.get('confident')} disease={disambig.get('disease')}")
+
+    if not disambig.get("confident") and disambig_count < _MAX_DISAMBIGUATE:
+        if q := disambig.get("question", ""):
+            yield q
+            return
+
+    # Chốt bệnh: dùng kết quả disambiguate, fallback về chunk score cao nhất
+    top_disease = disambig.get("disease") or coarse_points[0].payload.get("disease_name", "")
     print(f"[COARSE] top disease: {top_disease}")
 
-    # Vòng 2 — Fine: lấy chunk điều trị của đúng bệnh đó
+    # ── 6. FINE RETRIEVE → treatment chunks ──────────────────
     fine_points = _retrieve_treatment(retriever, top_disease) if top_disease else []
     print(f"[FINE] {len(fine_points)} treatment chunks for: {top_disease}")
 
-    # Merge coarse + fine, dedup theo ID, sort theo score
     seen: dict[str, object] = {}
     for p in coarse_points + fine_points:
         pid = str(p.id)
@@ -415,19 +502,13 @@ async def stream_answer(
     all_points = sorted(seen.values(), key=lambda p: p.score, reverse=True)
 
     context = retriever.format_points(all_points)
-
-    print("[CONTEXT RELEVANCE INPUT]")
-    print(f"Query: {symptom_query[:100]}")
-    print(f"Context diseases: {_extract_disease_names(context)}")
+    print(f"[CONTEXT] diseases: {_extract_disease_names(context)}")
 
     if not context:
-        yield (
-            "Mình chưa tìm được thông tin phù hợp. "
-            "Bạn có thể mô tả thêm triệu chứng cụ thể không?"
-        )
+        yield "Mình chưa tìm được thông tin phù hợp. Bạn có thể mô tả thêm triệu chứng cụ thể không?"
         return
 
-    # ── 6. DIAGNOSE ──────────────────────────────────────────
+    # ── 7. DIAGNOSE ──────────────────────────────────────────
     system = _SYSTEM + f"\n\nTài liệu tham khảo:\n{context}"
     resp = await traced_client.chat.completions.create(
         model=diagnosis_model,
