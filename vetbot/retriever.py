@@ -74,6 +74,15 @@ Output: "mắt đục có màng trắng viêm giác mạc viêm gan truyền nhi
     except Exception:
         return query
 
+def _find_cross_reference(points: list) -> str | None:
+    """Đọc cross_ref_disease từ payload (được LLM detect lúc ingest)."""
+    for p in points:
+        ref = p.payload.get("cross_ref_disease")
+        if ref:
+            return ref
+    return None
+
+
 def _format_points(points: list) -> str:
     chunks = []
     for r in points:
@@ -161,31 +170,39 @@ class VetRetriever:
             with_payload=True,
         ).points
 
-        # Pass 2: generic treatment query — KHÔNG chứa tên bệnh cụ thể
-        # để embedding không bị kéo về bệnh đó, bắt được cross-reference
-        # VD: "Parvo điều trị → Carre" → query generic sẽ match Carre treatment chunks
-        generic_query = "điều trị thuốc chống nôn bù nước huyết thanh phác đồ liều lượng"
-        resp2 = self._openai.embeddings.create(
-            model=_EMBEDDING_MODEL,
-            input=generic_query,
-        )
-        dense2 = resp2.data[0].embedding
-        sparse2 = _build_sparse_vector(generic_query)
-
-        unfiltered = self._client.query_points(
-            collection_name=_COLLECTION,
-            prefetch=[
-                Prefetch(query=dense2, using="dense", limit=self._top_k * 2),
-                Prefetch(query=sparse2, using="sparse", limit=self._top_k * 2),
-            ],
-            query=FusionQuery(fusion=Fusion.RRF),
-            limit=self._top_k,
-            with_payload=True,
-        ).points
+        # Pass 2: targeted retrieve cho bệnh được cross-reference
+        # VD: Parvo chunk có "Tương tự như bệnh Carre" → retrieve Carre treatment
+        ref_disease = _find_cross_reference(filtered)
+        ref_points: list = []
+        if ref_disease:
+            print(f"[CROSS-REF] {disease_name} → {ref_disease}")
+            ref_query = f"{ref_disease} điều trị thuốc liều lượng phác đồ"
+            resp2 = self._openai.embeddings.create(
+                model=_EMBEDDING_MODEL,
+                input=ref_query,
+            )
+            ref_filter = Filter(
+                must=[FieldCondition(
+                    key="disease_name",
+                    match=MatchValue(value=ref_disease),
+                )]
+            )
+            ref_points = self._client.query_points(
+                collection_name=_COLLECTION,
+                prefetch=[
+                    Prefetch(query=resp2.data[0].embedding, using="dense",
+                             limit=self._top_k * 2, filter=ref_filter),
+                    Prefetch(query=_build_sparse_vector(ref_query), using="sparse",
+                             limit=self._top_k * 2, filter=ref_filter),
+                ],
+                query=FusionQuery(fusion=Fusion.RRF),
+                limit=self._top_k,
+                with_payload=True,
+            ).points
 
         # Dedup + sort
         seen: dict[str, object] = {}
-        for p in filtered + unfiltered:
+        for p in filtered + ref_points:
             pid = str(p.id)
             if pid not in seen or p.score > seen[pid].score:
                 seen[pid] = p

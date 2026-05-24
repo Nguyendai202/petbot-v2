@@ -109,6 +109,43 @@ def _build_sparse_vector(text: str) -> SparseVector:
 # HEADING & SPLIT LOGIC (giữ nguyên)
 # ─────────────────────────────────────────────
 
+_CROSS_REF_TRIGGERS = {"tương tự", "xem bệnh", "xem điều trị", "theo bệnh"}
+
+
+def _detect_cross_ref(text: str, openai_client) -> str | None:
+    """Dùng LLM phát hiện cross-reference điều trị, VD: 'Tương tự bệnh Carre'.
+    Chỉ gọi khi chunk chứa trigger keyword để tiết kiệm API calls.
+    """
+    lower = text.lower()
+    if not any(t in lower for t in _CROSS_REF_TRIGGERS):
+        return None
+
+    resp = openai_client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    "Đoạn văn sau có nhắc đến 'điều trị tương tự bệnh X' "
+                    "hoặc 'xem điều trị bệnh X' không?\n"
+                    "Nếu có: trả về đúng tên bệnh đó (chỉ tên, không giải thích).\n"
+                    "Nếu không: trả về từ null.\n\n"
+                    f"{text[:400]}"
+                ),
+            }
+        ],
+        max_tokens=20,
+        temperature=0,
+    )
+    result = resp.choices[0].message.content.strip()
+    if result.lower() == "null" or not result:
+        return None
+    name = result.strip().rstrip(".")
+    if not name.lower().startswith("bệnh"):
+        name = "Bệnh " + name
+    return name
+
+
 def _normalize(line: str) -> str:
     return re.sub(r"\s+", " ", line).strip()
 
@@ -236,8 +273,18 @@ def ingest_pdf(pdf_path: str) -> dict:
     )
     print("  Created payload index: disease_name")
 
-    # ── Embed + build sparse + upload ────────────────────────
+    # ── Detect cross-references ───────────────────────────────
     openai_client = OpenAI()
+    cross_ref_count = 0
+    for chunk in chunks:
+        ref = _detect_cross_ref(chunk["page_content"], openai_client)
+        chunk["cross_ref_disease"] = ref
+        if ref:
+            cross_ref_count += 1
+            print(f"  [CROSS-REF] {chunk['disease_name']} → {ref}")
+    print(f"  {cross_ref_count} cross-references detected\n")
+
+    # ── Embed + build sparse + upload ────────────────────────
     total_batches = (len(chunks) + _BATCH_SIZE - 1) // _BATCH_SIZE
 
     for i in range(0, len(chunks), _BATCH_SIZE):
