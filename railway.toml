@@ -1,0 +1,15 @@
+[build]
+# Dùng Dockerfile thay vì Nixpacks — predictable, reproducible
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "bash start.sh"
+
+# Chainlit serve "/" = UI (200 OK khi ready)
+healthcheckPath = "/"
+healthcheckTimeout = 60
+
+# Không restart khi graceful exit (code 0), chỉ restart khi crash
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3

@@ -1,0 +1,41 @@
+# Git
+.git/
+.gitignore
+
+# Python cache
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+env/
+.venv/
+rag-wire-env/
+
+# Secrets — KHÔNG bao giờ đưa vào image
+.env
+.env.*
+
+# Data (runtime-generated, không đưa vào image)
+data/
+
+# Dev tools
+test.py
+ingest_once.py
+
+# Chainlit translations (23 files không cần thiết cho runtime)
+.chainlit/translations/
+
+# Docs
+README.md
+*.md
+!chainlit.md
+
+# CI/CD
+.github/
+
+# IDE
+.vscode/
+.idea/
