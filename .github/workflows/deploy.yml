@@ -86,7 +86,7 @@ jobs:
       - name: Deploy
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-        run: railway up --service vetbot-chatbot --detach
+        run: railway up --detach
 
       - name: Wait for deployment
         env:
