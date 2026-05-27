@@ -17,6 +17,9 @@ __pycache__/
 # Chainlit translations (23 files Chainlit-bundled, không cần track)
 .chainlit/translations/
 
+# Docs (không public)
+README.md
+
 # IDE
 .vscode/
 .idea/
