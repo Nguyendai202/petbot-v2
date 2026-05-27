@@ -404,6 +404,11 @@ async def _disambiguate(
         return {"confident": True, "disease": "", "question": ""}
 
 
+def _thinking(content: str) -> dict:
+    """Tạo thinking signal để app.py hiển thị cho user thấy đang làm gì."""
+    return {"type": "thinking", "content": content}
+
+
 async def stream_answer(
     retriever: VetRetriever,
     messages: list[dict],
@@ -428,6 +433,7 @@ async def stream_answer(
 
     # ── 1. EMERGENCY ─────────────────────────────────────────
     if _is_emergency(query):
+        yield _thinking("🚨 Phát hiện tình huống khẩn cấp — đang xử lý...")
         context = _retrieve(retriever, query)
         system = _SYSTEM + (f"\n\nTài liệu tham khảo:\n{context}" if context else "")
         resp = await traced_client.chat.completions.create(
@@ -442,6 +448,7 @@ async def stream_answer(
         return
 
     # ── 2. CLASSIFY → hỏi thông tin cơ bản nếu thiếu ────────
+    yield _thinking("🔍 Đang phân tích câu hỏi...")
     followup_count = _count_followup_turns(messages)
     if followup_count < _MAX_FOLLOWUP:
         classify_result = await _classify(messages, traced_client, routing_model)
@@ -452,6 +459,7 @@ async def stream_answer(
                 return
 
     # ── 3. QUERY UNDERSTANDING ───────────────────────────────
+    yield _thinking("💬 Đang hiểu yêu cầu...")
     qu_result = await _query_understanding(messages, traced_client, routing_model)
 
     if not qu_result.get("needs_retrieval", True):
@@ -460,6 +468,7 @@ async def stream_answer(
             return
 
     # ── 4. COARSE RETRIEVE ───────────────────────────────────
+    yield _thinking("📚 Đang tìm kiếm tài liệu liên quan...")
     queries = qu_result.get("queries", [])
     symptom_queries = [q["query"] for q in queries if q.get("purpose") == "symptom"]
     symptom_query = symptom_queries[0] if symptom_queries else " ".join(
@@ -475,6 +484,7 @@ async def stream_answer(
         return
 
     # ── 5. DISAMBIGUATE → chốt bệnh hoặc hỏi thêm ──────────
+    yield _thinking("🩺 Đang phân tích triệu chứng...")
     coarse_context = retriever.format_points(coarse_points)
     disambig_count = _count_disambiguate_turns(messages)
     disambig = await _disambiguate(messages, coarse_context, traced_client, routing_model)
@@ -491,6 +501,7 @@ async def stream_answer(
     print(f"[COARSE] top disease: {top_disease}")
 
     # ── 6. FINE RETRIEVE → treatment chunks ──────────────────
+    yield _thinking(f"💊 Đang tìm phác đồ điều trị{f': {top_disease}' if top_disease else ''}...")
     fine_points = _retrieve_treatment(retriever, top_disease) if top_disease else []
     print(f"[FINE] {len(fine_points)} treatment chunks for: {top_disease}")
 
@@ -509,6 +520,7 @@ async def stream_answer(
         return
 
     # ── 7. DIAGNOSE ──────────────────────────────────────────
+    yield _thinking("✍️ Đang soạn câu trả lời...")
     system = _SYSTEM + f"\n\nTài liệu tham khảo:\n{context}"
     resp = await traced_client.chat.completions.create(
         model=diagnosis_model,

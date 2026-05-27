@@ -19,11 +19,8 @@ client = AsyncOpenAI()
 
 # ── Persistence + Auth ────────────────────────────────────────────────────────
 
-# Railway cung cấp DATABASE_URL (PostgreSQL) qua plugin.
-# Fallback về SQLite local khi dev.
 _db_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///data/chat_history.db")
 
-# Railway PostgreSQL URL có dạng postgres://... → SQLAlchemy cần postgresql+asyncpg://...
 if _db_url.startswith("postgres://"):
     _db_url = _db_url.replace("postgres://", "postgresql+asyncpg://", 1)
 elif _db_url.startswith("postgresql://") and "+asyncpg" not in _db_url:
@@ -69,11 +66,31 @@ async def on_message(message: cl.Message):
     await response_msg.send()
 
     full_response = ""
+    thinking_step = None
+
     try:
-        async for token in stream_answer(retriever, history, client):
-            full_response += token
-            await response_msg.stream_token(token)
+        async for item in stream_answer(retriever, history, client):
+
+            # ── Thinking indicator ────────────────────────────────────────
+            if isinstance(item, dict) and item.get("type") == "thinking":
+                if thinking_step is None:
+                    thinking_step = cl.Step(name="Đang suy nghĩ", type="run")
+                    await thinking_step.__aenter__()
+                thinking_step.output = item["content"]
+                await thinking_step.update()
+                continue
+
+            # ── Token thật → đóng thinking, stream ra màn hình ───────────
+            if thinking_step is not None:
+                await thinking_step.__aexit__(None, None, None)
+                thinking_step = None
+
+            full_response += item
+            await response_msg.stream_token(item)
+
     except Exception as exc:
+        if thinking_step is not None:
+            await thinking_step.__aexit__(None, None, None)
         full_response = f"Đã có lỗi xảy ra: {exc}"
 
     response_msg.content = full_response
