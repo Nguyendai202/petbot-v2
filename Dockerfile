@@ -34,7 +34,6 @@ COPY --from=builder /app/.venv /app/.venv
 # Copy source code (theo thứ tự từ ít thay đổi → hay thay đổi)
 COPY vetbot/           ./vetbot/
 COPY .chainlit/config.toml  ./.chainlit/config.toml
-COPY chainlit.md       .
 COPY config.yaml       .
 COPY init_db.py        .
 COPY start.sh          .
