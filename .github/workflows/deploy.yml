@@ -1,0 +1,101 @@
+name: CI/CD → Railway
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── 1. Validate code trước khi deploy ─────────────────────
+  lint-and-check:
+    name: Lint & Import Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: uv pip install --system -r requirements.txt
+
+      - name: Check imports resolve (không cần API keys)
+        run: |
+          python -c "
+          import sys
+          # Kiểm tra tất cả module import được
+          import chainlit
+          import openai
+          import qdrant_client
+          import langsmith
+          import aiosqlite
+          import asyncpg
+          import sqlalchemy
+          print('✅ All imports OK')
+          print(f'chainlit={chainlit.__version__}')
+          print(f'openai={openai.__version__}')
+          "
+
+      - name: Validate Dockerfile syntax
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: error
+
+  # ── 2. Build Docker image để xác nhận build không lỗi ─────
+  build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    needs: lint-and-check
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (không push)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: vetbot:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── 3. Deploy lên Railway (chỉ khi push lên main) ─────────
+  deploy:
+    name: Deploy to Railway
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway up --service vetbot-chatbot --detach
+
+      - name: Wait for deployment
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          echo "Waiting 30s for Railway to start..."
+          sleep 30
+          # Kiểm tra app đã sẵn sàng chưa
+          URL="${{ secrets.RAILWAY_APP_URL }}"
+          if [ -n "$URL" ]; then
+            curl --fail --retry 5 --retry-delay 10 "$URL/" && echo "✅ Deploy OK"
+          fi

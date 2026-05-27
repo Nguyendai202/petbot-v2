@@ -1,6 +1,22 @@
+# Secrets
 .env
+.env.*
+
+# Runtime data
 data/
+
+# Python cache
 __pycache__/
+**/__pycache__/
 *.pyc
-.chainlit/
-vetbot/__pycache__/
+*.pyo
+
+# Virtual environments (uv tạo .gitignore bên trong env/ tự động)
+# env/ — đã được env/.gitignore che
+
+# Chainlit translations (23 files Chainlit-bundled, không cần track)
+.chainlit/translations/
+
+# IDE
+.vscode/
+.idea/

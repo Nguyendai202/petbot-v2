@@ -1,4 +1,8 @@
-"""Run this once to create the SQLite database schema for Chainlit chat history."""
+"""
+Run this once to create the database schema for Chainlit chat history.
+- Dev local: SQLite tại data/chat_history.db
+- Railway:   PostgreSQL via DATABASE_URL (Chainlit tự tạo schema, script này chỉ dành cho SQLite)
+"""
 
 import asyncio
 import os
