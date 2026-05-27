@@ -62,35 +62,30 @@ async def on_message(message: cl.Message):
     history: list = cl.user_session.get("history", [])
     history.append({"role": "user", "content": message.content})
 
-    response_msg = cl.Message(content="")
+    response_msg = cl.Message(content="*thinking...*")
     await response_msg.send()
 
     full_response = ""
-    thinking_step = None
+    first_token = True
 
     try:
         async for item in stream_answer(retriever, history, client):
 
-            # ── Thinking indicator ────────────────────────────────────────
+            # ── Thinking indicator — cập nhật text trong message ─────────
             if isinstance(item, dict) and item.get("type") == "thinking":
-                if thinking_step is None:
-                    thinking_step = cl.Step(name="Đang suy nghĩ", type="run")
-                    await thinking_step.__aenter__()
-                thinking_step.output = item["content"]
-                await thinking_step.update()
+                response_msg.content = f"*{item['content']}*"
+                await response_msg.update()
                 continue
 
-            # ── Token thật → đóng thinking, stream ra màn hình ───────────
-            if thinking_step is not None:
-                await thinking_step.__aexit__(None, None, None)
-                thinking_step = None
+            # ── Token đầu tiên → xóa thinking, bắt đầu stream ───────────
+            if first_token:
+                response_msg.content = ""
+                first_token = False
 
             full_response += item
             await response_msg.stream_token(item)
 
     except Exception as exc:
-        if thinking_step is not None:
-            await thinking_step.__aexit__(None, None, None)
         full_response = f"Đã có lỗi xảy ra: {exc}"
 
     response_msg.content = full_response
