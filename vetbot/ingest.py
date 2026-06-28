@@ -1,4 +1,5 @@
-"""Core ingest logic — import từ ingest_once.py để chạy."""
+"""Core ingest logic — imported from ingest_once.py to run."""
+import logging
 import os
 import re
 import uuid
@@ -15,6 +16,8 @@ from qdrant_client.models import (
     SparseVector, NamedVector, NamedSparseVector,
     PayloadSchemaType,
 )
+
+logger = logging.getLogger(__name__)
 
 _COLLECTION = "vet-disease"
 _BATCH_SIZE = 20
@@ -56,13 +59,13 @@ _DISEASE_HEADINGS = {
 }
 
 _DISEASE_NAME_MAP = {
-    # Chuẩn hoá tên Parvovirus — 3 heading khác nhau trong PDF cùng 1 bệnh
+    # Normalize Parvovirus name — 3 different headings in the PDF for the same disease
     "Parvovirus": "Bệnh Viêm Ruột Truyền Nhiễm Do Parvovirus",
     "Viêm Ruột Truyền Nhiễm Do Parvovirus": "Bệnh Viêm Ruột Truyền Nhiễm Do Parvovirus",
     "Bệnh Viêm Ruột Truyền Nhiễm Do": "Bệnh Viêm Ruột Truyền Nhiễm Do Parvovirus",
-    # Chuẩn hoá tên bị lỗi spacing
+    # Fix a name with broken spacing
     "Bệnh L Ỵ Do Amip": "Bệnh Lỵ Do Amip",
-    # Thêm prefix "Bệnh" cho nhất quán
+    # Add "Bệnh" prefix for consistency
     "Viêm Bàng Quang": "Bệnh Viêm Bàng Quang",
 }
 
@@ -72,10 +75,10 @@ _DISEASE_NAME_MAP = {
 # ─────────────────────────────────────────────
 
 def _tokenize_vi(text: str) -> list[str]:
-    """Tokenize tiếng Việt đơn giản — split theo ký tự không phải chữ."""
+    """Simple Vietnamese tokenizer — splits on non-word characters."""
     text = text.lower()
     tokens = re.findall(r"[a-zA-ZÀ-ỹ0-9]+", text)
-    # Bỏ stopwords ngắn
+    # Drop short stopwords
     stopwords = {"và", "của", "là", "có", "không", "bé", "con", "các",
                  "cho", "với", "trong", "được", "từ", "theo", "khi"}
     return [t for t in tokens if len(t) > 1 and t not in stopwords]
@@ -83,18 +86,18 @@ def _tokenize_vi(text: str) -> list[str]:
 
 def _build_sparse_vector(text: str) -> SparseVector:
     """
-    Tạo sparse vector kiểu TF (term frequency) từ text.
-    Dùng hash của token làm index để không cần vocabulary cố định.
+    Build a TF (term frequency) sparse vector from text.
+    Uses a token hash as the index so no fixed vocabulary is needed.
     """
     tokens = _tokenize_vi(text)
     if not tokens:
-        # Trả về sparse vector rỗng hợp lệ
+        # Return a valid empty sparse vector
         return SparseVector(indices=[0], values=[0.0])
 
-    # Đếm term frequency
+    # Count term frequency
     tf: dict[int, float] = {}
     for token in tokens:
-        idx = abs(hash(token)) % 100_000  # Hash vào 100k dimensions
+        idx = abs(hash(token)) % 100_000  # Hash into 100k dimensions
         tf[idx] = tf.get(idx, 0.0) + 1.0
 
     # Normalize
@@ -106,15 +109,15 @@ def _build_sparse_vector(text: str) -> SparseVector:
 
 
 # ─────────────────────────────────────────────
-# HEADING & SPLIT LOGIC (giữ nguyên)
+# HEADING & SPLIT LOGIC (unchanged)
 # ─────────────────────────────────────────────
 
 _CROSS_REF_TRIGGERS = {"tương tự", "xem bệnh", "xem điều trị", "theo bệnh"}
 
 
 def _detect_cross_ref(text: str, openai_client) -> str | None:
-    """Dùng LLM phát hiện cross-reference điều trị, VD: 'Tương tự bệnh Carre'.
-    Chỉ gọi khi chunk chứa trigger keyword để tiết kiệm API calls.
+    """Use an LLM to detect treatment cross-references, e.g. 'similar to Carre disease'.
+    Only called when the chunk contains a trigger keyword, to save API calls.
     """
     lower = text.lower()
     if not any(t in lower for t in _CROSS_REF_TRIGGERS):
@@ -195,9 +198,9 @@ def split_with_disease_context(text: str, source: str) -> list[dict]:
             if not chunk.strip():
                 continue
 
-            # Prepend tên bệnh vào đầu mỗi chunk
-            # → sparse search luôn tìm được tên bệnh
-            # dù chunk nằm ở phần triệu chứng hay điều trị
+            # Prepend the disease name to every chunk
+            # → sparse search can always find the disease name
+            # regardless of whether the chunk is symptoms or treatment
             if disease_name and disease_name != "Chưa xác định":
                 page_content = f"[{disease_name}]\n{chunk}"
             else:
@@ -220,24 +223,21 @@ def ingest_pdf(pdf_path: str) -> dict:
     if not path.exists():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
-    print("  Extracting text from PDF...")
+    logger.info("Extracting text from PDF...")
     text = extract_text(str(path))
 
-    print("  Splitting with disease context...")
+    logger.info("Splitting with disease context...")
     chunks = split_with_disease_context(text, source=path.name)
 
     before = len(chunks)
     chunks = [c for c in chunks if c["disease_name"] != "Chưa xác định"]
-    print(f"  {before - len(chunks)} chunks 'Chưa xác định' bị loại")
-    print(f"  {len(chunks)} chunks còn lại")
+    logger.info("%d 'unidentified' chunks dropped, %d chunks remaining",
+                before - len(chunks), len(chunks))
 
     disease_counts = Counter(c["disease_name"] for c in chunks)
-    print("\n  Disease distribution:")
-    for disease, count in disease_counts.most_common(30):
-        print(f"    {disease}: {count} chunks")
-    print()
+    logger.info("Disease distribution: %s", dict(disease_counts.most_common(30)))
 
-    # ── Recreate collection với HYBRID vectors ────────────────
+    # ── Recreate collection with HYBRID vectors ───────────────
     client = QdrantClient(
         url=os.getenv("QDRANT_URL"),
         api_key=os.getenv("QDRANT_KEY"),
@@ -246,9 +246,9 @@ def ingest_pdf(pdf_path: str) -> dict:
 
     if client.collection_exists(_COLLECTION):
         client.delete_collection(_COLLECTION)
-        print(f"  Deleted old collection: {_COLLECTION}")
+        logger.info("Deleted old collection: %s", _COLLECTION)
 
-    # Tạo collection với cả dense và sparse vectors
+    # Create collection with both dense and sparse vectors
     client.create_collection(
         collection_name=_COLLECTION,
         vectors_config={
@@ -263,15 +263,15 @@ def ingest_pdf(pdf_path: str) -> dict:
             ),
         },
     )
-    print(f"  Created hybrid collection: {_COLLECTION}")
+    logger.info("Created hybrid collection: %s", _COLLECTION)
 
-    # Tạo payload index cho disease_name để dùng filter trong coarse-to-fine
+    # Create a payload index on disease_name for coarse-to-fine filtering
     client.create_payload_index(
         collection_name=_COLLECTION,
         field_name="disease_name",
         field_schema=PayloadSchemaType.KEYWORD,
     )
-    print("  Created payload index: disease_name")
+    logger.info("Created payload index: disease_name")
 
     # ── Detect cross-references ───────────────────────────────
     openai_client = OpenAI()
@@ -281,8 +281,8 @@ def ingest_pdf(pdf_path: str) -> dict:
         chunk["cross_ref_disease"] = ref
         if ref:
             cross_ref_count += 1
-            print(f"  [CROSS-REF] {chunk['disease_name']} → {ref}")
-    print(f"  {cross_ref_count} cross-references detected\n")
+            logger.info("cross_ref disease=%s ref=%s", chunk["disease_name"], ref)
+    logger.info("%d cross-references detected", cross_ref_count)
 
     # ── Embed + build sparse + upload ────────────────────────
     total_batches = (len(chunks) + _BATCH_SIZE - 1) // _BATCH_SIZE
@@ -291,14 +291,14 @@ def ingest_pdf(pdf_path: str) -> dict:
         batch = chunks[i: i + _BATCH_SIZE]
         texts = [c["page_content"] for c in batch]
 
-        # Dense embedding từ OpenAI
+        # Dense embedding from OpenAI
         resp = openai_client.embeddings.create(
             model=_EMBEDDING_MODEL,
             input=texts,
         )
         dense_vectors = [e.embedding for e in resp.data]
 
-        # Sparse vector từ TF tokenization
+        # Sparse vector from TF tokenization
         sparse_vectors = [_build_sparse_vector(t) for t in texts]
 
         points = [
@@ -321,9 +321,9 @@ def ingest_pdf(pdf_path: str) -> dict:
             except Exception as e:
                 if attempt == 2:
                     raise
-                print(f"  Batch {i // _BATCH_SIZE + 1} retry {attempt + 1}/3 ({e})")
+                logger.warning("Batch %d retry %d/3 (%s)", i // _BATCH_SIZE + 1, attempt + 1, e)
 
-        print(f"  Batch {i // _BATCH_SIZE + 1}/{total_batches} uploaded")
+        logger.info("Batch %d/%d uploaded", i // _BATCH_SIZE + 1, total_batches)
 
-    print(f"\n  Done! {len(chunks)} chunks ingested with hybrid vectors.")
+    logger.info("Done! %d chunks ingested with hybrid vectors.", len(chunks))
     return {"chunks_created": len(chunks), "processed": 1}

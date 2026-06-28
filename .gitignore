@@ -1,6 +1,7 @@
 # Secrets
 .env
 .env.*
+!.env.example
 
 # Runtime data
 data/
@@ -17,9 +18,13 @@ __pycache__/
 # Chainlit translations (23 files Chainlit-bundled, không cần track)
 .chainlit/translations/
 
-# Docs (không public)
-README.md
+# Internal docs (không public)
+README_old.md
+docs/
 
 # IDE
 .vscode/
 .idea/
+
+# macOS
+.DS_Store
