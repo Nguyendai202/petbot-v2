@@ -1,4 +1,4 @@
-# VetBot v2
+# VetBot
 
 A Vietnamese-language RAG chatbot that helps pet owners triage dog/cat symptoms,
 get a likely diagnosis, and receive treatment guidance — grounded in a veterinary
