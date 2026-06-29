@@ -1,6 +1,7 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+import logging
 import os
 from typing import Optional
 
@@ -11,6 +12,8 @@ from chainlit.types import ThreadDict
 from openai import AsyncOpenAI
 
 from vetbot import VetRetriever, stream_answer
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
 # ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -29,9 +32,13 @@ elif _db_url.startswith("postgresql://") and "+asyncpg" not in _db_url:
 cl_data._data_layer = SQLAlchemyDataLayer(conninfo=_db_url)
 
 
+_APP_USER = os.environ["APP_USER"]
+_APP_PASSWORD = os.environ["APP_PASSWORD"]
+
+
 @cl.password_auth_callback
 def auth_callback(username: str, password: str) -> Optional[cl.User]:
-    if username == os.getenv("APP_USER", "admin") and password == os.getenv("APP_PASSWORD", "admin"):
+    if username == _APP_USER and password == _APP_PASSWORD:
         return cl.User(identifier=username, metadata={"role": "user"})
     return None
 
@@ -71,13 +78,13 @@ async def on_message(message: cl.Message):
     try:
         async for item in stream_answer(retriever, history, client):
 
-            # ── Thinking indicator — cập nhật text trong message ─────────
+            # ── Thinking indicator — update the message text ─────────────
             if isinstance(item, dict) and item.get("type") == "thinking":
                 response_msg.content = f"*{item['content']}*"
                 await response_msg.update()
                 continue
 
-            # ── Token đầu tiên → xóa thinking, bắt đầu stream ───────────
+            # ── First token → clear thinking, start streaming ────────────
             if first_token:
                 response_msg.content = ""
                 first_token = False

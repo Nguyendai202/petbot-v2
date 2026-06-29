@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 
@@ -8,6 +9,8 @@ from qdrant_client.models import (
     Prefetch, FusionQuery, Fusion,
     Filter, FieldCondition, MatchValue,
 )
+
+logger = logging.getLogger(__name__)
 
 _COLLECTION = "vet-disease"
 _EMBEDDING_MODEL = "text-embedding-3-large"
@@ -40,9 +43,9 @@ def _build_sparse_vector(text: str) -> SparseVector:
 
 async def _expand_query(query: str, client) -> str:
     """
-    Dùng LLM expand query với từ đồng nghĩa y khoa.
-    VD: "uống nhiều nước" → thêm "khát nước, mất nước"
-        "nôn 30 phút/lần" → thêm "nôn liên tục, tần suất nôn cao"
+    Use an LLM to expand the query with medical synonyms.
+    E.g. "uống nhiều nước" (drinks a lot of water) → adds "khát nước, mất nước"
+         "nôn 30 phút/lần" (vomits every 30 min) → adds "nôn liên tục, tần suất nôn cao"
     """
     try:
         resp = await client.chat.completions.create(
@@ -69,13 +72,13 @@ Output: "mắt đục có màng trắng viêm giác mạc viêm gan truyền nhi
             stream=False,
         )
         expanded = resp.choices[0].message.content.strip()
-        print(f"[QUERY EXPANSION] {query[:50]} → {expanded[:80]}")
+        logger.info("query_expansion query=%s expanded=%s", query[:50], expanded[:80])
         return expanded
     except Exception:
         return query
 
 def _find_cross_reference(points: list) -> str | None:
-    """Đọc cross_ref_disease từ payload (được LLM detect lúc ingest)."""
+    """Read cross_ref_disease from payload (detected by an LLM at ingest time)."""
     for p in points:
         ref = p.payload.get("cross_ref_disease")
         if ref:
@@ -126,7 +129,7 @@ class VetRetriever:
         ).points
 
     def get_points(self, *queries: str) -> list:
-        """Retrieve, dedup theo point ID, sort theo score giảm dần."""
+        """Retrieve, dedup by point ID, sort by score descending."""
         seen: dict[str, object] = {}
         for query in queries:
             for point in self._query(query):
@@ -136,10 +139,10 @@ class VetRetriever:
         return sorted(seen.values(), key=lambda p: p.score, reverse=True)
 
     def get_treatment_points(self, disease_name: str) -> list:
-        """Vòng 2 coarse-to-fine: search điều trị.
-        - Pass 1: filtered theo disease_name (precision)
-        - Pass 2: unfiltered với query điều trị (bắt cross-reference như Parvo→Carre)
-        Dedup + sort theo score.
+        """Second pass of coarse-to-fine: search for treatment.
+        - Pass 1: filtered by disease_name (precision)
+        - Pass 2: unfiltered with a treatment query (catches cross-references like Parvo→Carre)
+        Dedup + sort by score.
         """
         treatment_query = f"{disease_name} điều trị thuốc liều lượng phác đồ"
         resp = self._openai.embeddings.create(
@@ -156,7 +159,7 @@ class VetRetriever:
             )]
         )
 
-        # Pass 1: filtered — lấy chunk điều trị của đúng bệnh
+        # Pass 1: filtered — get treatment chunks for the exact disease
         filtered = self._client.query_points(
             collection_name=_COLLECTION,
             prefetch=[
@@ -170,12 +173,12 @@ class VetRetriever:
             with_payload=True,
         ).points
 
-        # Pass 2: targeted retrieve cho bệnh được cross-reference
-        # VD: Parvo chunk có "Tương tự như bệnh Carre" → retrieve Carre treatment
+        # Pass 2: targeted retrieve for the cross-referenced disease
+        # E.g. a Parvo chunk says "similar to Carre disease" → retrieve Carre treatment
         ref_disease = _find_cross_reference(filtered)
         ref_points: list = []
         if ref_disease:
-            print(f"[CROSS-REF] {disease_name} → {ref_disease}")
+            logger.info("cross_ref disease=%s ref_disease=%s", disease_name, ref_disease)
             ref_query = f"{ref_disease} điều trị thuốc liều lượng phác đồ"
             resp2 = self._openai.embeddings.create(
                 model=_EMBEDDING_MODEL,
@@ -218,7 +221,7 @@ class VetRetriever:
         return _format_points(points)
 
     def debug_payload(self, query: str) -> None:
-        """Debug: xem cả dense và sparse retrieve được gì."""
+        """Debug: inspect what both dense and sparse retrieval return."""
         resp = self._openai.embeddings.create(
             model=_EMBEDDING_MODEL,
             input=query,
